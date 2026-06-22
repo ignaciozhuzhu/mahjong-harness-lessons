@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 6 课：Shadow Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:980px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 6 课：Shadow Harness</h1>
+<p class="muted">目标：理解为什么模型/规则要先“影子评分”，不能直接改动作。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心模型</h2>
+<p class="formula"><strong>Shadow = 只在旁边打分，不接管真实动作。</strong></p>
+<p>Shadow harness 用来回答：“这个模型/规则的判断，和 EV label 的真实收益方向是否一致？”如果一致，才可能进入 candidate；如果不一致，只能作为 diagnostic。</p>
+<pre>EV label bank
+  -> shadow scoring / calibration
+  -> candidate_ready 或 diagnostic_only
+  -> 仍然不能直接改动作</pre>
+</section>
+
+<section>
+<h2>2. 英文术语速查</h2>
+<table>
+<tr><th>英文术语</th><th>中文理解</th><th>在本项目里的意思</th></tr>
+<tr><td><code>shadow</code></td><td>影子模式</td><td>模型/规则只旁路评分，不改变真实 AI 行为。</td></tr>
+<tr><td><code>offline scoring</code></td><td>离线评分</td><td>在已有数据/标签上打分，不进入实战决策。</td></tr>
+<tr><td><code>calibration</code></td><td>校准</td><td>检查模型信心与真实 EV 是否方向一致。</td></tr>
+<tr><td><code>confidence</code></td><td>信心分</td><td>shadow 认为某个选择更好的强度。</td></tr>
+<tr><td><code>correlation</code></td><td>相关性</td><td>confidence 越高，真实 EV 是否也越好。</td></tr>
+<tr><td><code>candidate_ready</code></td><td>候选准备好</td><td>可以进入 candidate contract / changed-choice，而不是直接上线。</td></tr>
+<tr><td><code>diagnostic_only</code></td><td>仅诊断</td><td>有观察价值，但不能用于改动作或写 profile。</td></tr>
+<tr><td><code>action mutation</code></td><td>动作改写</td><td>模型直接改变 AI 打哪张/吃碰过；shadow 阶段必须禁止。</td></tr>
+<tr><td><code>quality gate</code></td><td>质量关卡</td><td>根据 label 数、fresh label、median、positive_rate、correlation 判断是否过关。</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 本项目里的真实 harness</h2>
+<p>看 <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_shadow_calibration_v2.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_shadow_calibration_v2.py</code></a>。</p>
+<table>
+<tr><th>Harness 四件套</th><th>这个脚本里的对应物</th></tr>
+<tr><td>Input</td><td>EV labels parquet + failure ledger</td></tr>
+<tr><td>Procedure</td><td>按 group 聚合 label，例如 <code>claim:peng</code>、<code>claim:chi</code>、<code>discard:top2</code>，计算 fresh/historical、平均数、中位数、positive_rate、correlation。</td></tr>
+<tr><td>Metrics</td><td><code>label_count</code>、<code>fresh_label_count</code>、<code>median_delta</code>、<code>positive_rate</code>、<code>confidence_ev_correlation</code>、<code>candidate_review_ready_count</code></td></tr>
+<tr><td>Decision boundary</td><td><code>candidate_review_ready</code> 或 <code>diagnostic_only</code>；并且 <code>action_mutation_allowed=false</code>。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 为什么 shadow 不能直接改动作</h2>
+<p>因为 shadow 的目标是“判断是否值得继续”，不是“已经证明可以上线”。</p>
+<div class="warn">
+<p><strong>一个 shadow 模型即使看起来正向，也可能只是：</strong></p>
+<ul>
+<li>在历史样本上过拟合；</li>
+<li>只会找少数极端正例；</li>
+<li>confidence 和真实 EV 没有正相关；</li>
+<li>会在自然局面里改太多动作。</li>
+</ul>
+<p>所以 shadow 阶段必须保持：<code>action_mutation_allowed=false</code>。</p>
+</div>
+</section>
+
+<section class="card">
+<h2>5. 一个真实结果怎么读</h2>
+<p>示例报告：<a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.json"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.json</code></a></p>
+<pre>claim:peng
+label_count: 174
+fresh_avg_score_delta: +1.2803
+fresh_median_delta: +0.4
+fresh_positive_rate: 0.5632
+recommendation: diagnostic_only
+candidate_review_ready_count: 0</pre>
+<p>这说明它不是完全没信号：平均数和中位数略正。但 positive_rate 只有约 56%，仍然有大量负例/噪声，所以结论是 <code>diagnostic_only</code>，不是 candidate ready。</p>
+</section>
+
+<section>
+<h2>6. 小测验：哪个 shadow 结果更可靠？</h2>
+<p>下面哪个更适合进入 candidate contract？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. label_count=5，avg 很高，但 fresh_label_count=0。</button>
+<button onclick="answer(false)">B. confidence 很高，但 confidence_ev_correlation 是负数。</button>
+<button onclick="answer(true)">C. fresh_label_count 足够，median 为正，positive_rate 高，confidence 与 EV 正相关。</button>
+<button onclick="answer(false)">D. shadow 模型说自己很有信心，所以可以直接改动作。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：我训练了一个 shadow 模型，看起来能选出一些正 EV 动作。你应该怎么提示我？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. 既然模型更聪明，直接接管 AI 动作。</button>
+<button onclick="promptAnswer(true,1)">B. 请先做 shadow calibration：报告 label_count、fresh_label_count、median、positive_rate、confidence_ev_correlation，并明确 action_mutation_allowed=false。</button>
+<button onclick="promptAnswer(false,1)">C. 只展示模型最有信心的正例。</button>
+<button onclick="promptAnswer(false,1)">D. 如果平均 EV 正，就跳过 changed-choice。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：shadow 输出 diagnostic_only，但你仍觉得有一些正例很有启发。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. diagnostic_only 太保守，强行进入 profile。</button>
+<button onclick="promptAnswer(true,2)">B. 请把正例和负例拆成 taxonomy，寻找 runtime-visible 的边界；如果边界不清，继续 diagnostic，不要写 profile。</button>
+<button onclick="promptAnswer(false,2)">C. 删除负例后重新算一次。</button>
+<button onclick="promptAnswer(false,2)">D. 直接换更大的模型，不用看 label。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后看 shadow 报告，用这个模板：</p>
+<pre>Shadow group:
+Label count:
+Fresh label count:
+Median delta:
+Positive rate:
+Confidence-EV correlation:
+Failure ledger conflict:
+Recommendation:
+Action mutation allowed:
+Next gate:</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_shadow_calibration_v2.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_shadow_calibration_v2.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.json"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.json</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/shadow_diagnostic/20260617_claim_peng_refined_split_ev/shadow_calibration_report.md</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">第 5 课：EV Label Harness</a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：A/B 与 Profile Gate Harness，学习为什么 whole-game A/B 是安全门，不是单点证明。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>shadow 要看 fresh label、稳定性和 confidence-EV 相关性，不能只看模型自信。';}
+  else{el.innerHTML='<span class="bad">不够稳。</span>shadow 阶段不能直接改动作，也不能忽略 fresh label、负例和相关性。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会把 shadow 限定为离线评分，并要求解释正负边界和下一步 gate。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 绕过 shadow 的安全边界，直接进入动作改写或 profile。';}
+}
+</script>
+</body>
+</html>

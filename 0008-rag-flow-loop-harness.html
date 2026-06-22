@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 8 课：RAG Flow Loop 里的 Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:980px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 8 课：RAG Flow Loop 里的 Harness</h1>
+<p class="muted">目标：把前 7 课串起来，理解十问 gate、evidence registry、summary pack 如何组成训练调优的元 harness。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心模型</h2>
+<p class="formula"><strong>RAG Flow Loop = 管理所有 harness 证据的元 harness。</strong></p>
+<p>前面几课讲的是单个 harness：branch eval、changed-choice、EV label、shadow、A/B、profile gate。第 8 课讲的是：这些证据如何进入一个统一流程，让 agent 不再凭感觉调参。</p>
+<pre>opportunity discovery
+  -> 十问 Improvement Direction Gate
+  -> evidence registry / failure ledger
+  -> RAG summary pack
+  -> next gate decision</pre>
+</section>
+
+<section>
+<h2>2. 英文术语速查</h2>
+<table>
+<tr><th>英文术语</th><th>中文理解</th><th>在本项目里的意思</th></tr>
+<tr><td><code>RAG</code></td><td>检索增强生成</td><td>让 agent 先检索项目记录，再回答/决策，避免忘记历史失败。</td></tr>
+<tr><td><code>flow loop</code></td><td>流程闭环</td><td>发现候选、评估证据、分流下一步、写入记录，再继续。</td></tr>
+<tr><td><code>opportunity</code></td><td>机会 / 候选方向</td><td>可能能提升 AI 的调参方向或错误家族。</td></tr>
+<tr><td><code>ten-question gate</code></td><td>十问关卡</td><td>用 10 个问题判断候选该 reject、diagnostic、label、shadow 还是 candidate。</td></tr>
+<tr><td><code>evidence registry</code></td><td>证据登记表</td><td>把 gate、score、failure ledger 等证据统一索引。</td></tr>
+<tr><td><code>failure ledger</code></td><td>失败台账</td><td>记录已失败/禁止重复的方向，避免反复踩坑。</td></tr>
+<tr><td><code>summary pack</code></td><td>摘要包</td><td>压缩当前训练状态，供 RAGFlow 检索。</td></tr>
+<tr><td><code>route</code></td><td>分流路线</td><td><code>reject</code>、<code>diagnostic_only</code>、<code>needs_label</code>、<code>needs_shadow</code>、<code>candidate_review_ready</code>。</td></tr>
+<tr><td><code>read-only</code></td><td>只读</td><td>只生成报告，不写 profile，不部署。</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 本项目里的真实脚本</h2>
+<table>
+<tr><th>脚本</th><th>职责</th></tr>
+<tr><td><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/evaluate_improvement_direction_gate.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/evaluate_improvement_direction_gate.py</code></a></td><td>执行十问 gate，输出 route 和 next_action。</td></tr>
+<tr><td><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_evidence_registry.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_evidence_registry.py</code></a></td><td>把 failure ledger、opportunity score、improvement gate 等证据统一登记。</td></tr>
+<tr><td><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_rag_train_loop_summary_pack.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_rag_train_loop_summary_pack.py</code></a></td><td>生成 RAGFlow 可检索的 summary pack。</td></tr>
+<tr><td><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/score_training_opportunities_v2.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/score_training_opportunities_v2.py</code></a></td><td>给机会打 ROI/覆盖/稳定性分，并接入十问 gate。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 十问 gate 如何串起前 7 课</h2>
+<table>
+<tr><th>十问字段</th><th>来自哪一课</th><th>作用</th></tr>
+<tr><td><code>evidence_scope</code></td><td>第 1-2 课</td><td>判断是单点正例还是错误家族。</td></tr>
+<tr><td><code>coverage_count</code></td><td>第 4 课</td><td>判断覆盖够不够。</td></tr>
+<tr><td><code>runtime_visible</code></td><td>第 2-3 课</td><td>确认策略只使用当时可见信息。</td></tr>
+<tr><td><code>negative_boundary_status</code></td><td>第 4-6 课</td><td>确认是否知道哪些局面会伤害。</td></tr>
+<tr><td><code>changed_choice_count</code></td><td>第 4 课</td><td>判断候选到底会改多少真实决策。</td></tr>
+<tr><td><code>ev_label_stability</code></td><td>第 5 课</td><td>判断 EV label 是否稳定。</td></tr>
+<tr><td><code>shadow_rank_quality</code></td><td>第 6 课</td><td>判断 shadow 是否能排序。</td></tr>
+<tr><td><code>whole_game_ab_status</code></td><td>第 7 课</td><td>判断整体安全性。</td></tr>
+<tr><td><code>profile_write_recommendation</code></td><td>第 7 课</td><td>判断是否只能人工 gate。</td></tr>
+<tr><td><code>final_route</code></td><td>第 8 课</td><td>决定下一步进入哪条路线。</td></tr>
+</table>
+</section>
+
+<section class="warn">
+<h2>5. 为什么这是“元 harness”</h2>
+<p>普通 harness 回答一个局部问题，比如“peng 比 pass 好吗？”</p>
+<p>RAG Flow Loop 回答的是更高层问题：</p>
+<pre>这个方向是否值得继续花预算？
+是否重复了历史失败？
+缺的是 changed-choice、EV label、shadow 还是 A/B？
+是否只能 diagnostic，还是可以 candidate review？</pre>
+<p>所以它不是替代 branch eval / EV label / A/B，而是管理这些证据的流程外壳。</p>
+</section>
+
+<section class="card">
+<h2>6. 小测验：一个候选应该去哪条 route？</h2>
+<p>某候选有 12 个同类 case，runtime-visible，但还没有 EV label。最合理 route 是？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. candidate_review_ready，因为已经有 12 个 case。</button>
+<button onclick="answer(true)">B. needs_label，因为它像错误家族，但还缺 EV label。</button>
+<button onclick="answer(false)">C. 直接写 profile，因为覆盖不算太少。</button>
+<button onclick="answer(false)">D. deploy，因为 RAG 记住了这个方向。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：你希望我自动推进一个新调优方向，但不要盲目跑长任务。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. 帮我找个方向直接跑到能写 profile。</button>
+<button onclick="promptAnswer(true,1)">B. 请先走 RAG Flow Loop：读取 failure ledger 和 evidence registry，对候选跑十问 gate，输出 final_route、缺失证据和最小下一步；不要写 profile 或部署。</button>
+<button onclick="promptAnswer(false,1)">C. 不用看历史，重新试一遍也可以。</button>
+<button onclick="promptAnswer(false,1)">D. 只要模型觉得有希望就继续跑。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：一个方向以前失败过，但你怀疑现在有新证据。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. 忽略以前失败记录，重新开始。</button>
+<button onclick="promptAnswer(true,2)">B. 请先查 failure ledger 的 blocked_actions 和 retry_condition；只有新证据满足 retry_condition，才允许进入 needs_label 或 needs_shadow。</button>
+<button onclick="promptAnswer(false,2)">C. 失败记录太保守，直接删掉。</button>
+<button onclick="promptAnswer(false,2)">D. 用更大的样本强行证明它对。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后你要我推进一个调优方向，可以用这个模板：</p>
+<pre>目标方向：
+已知正例：
+担心的负例：
+是否查 failure ledger：是
+请输出十问 gate：是
+不要写 profile：是
+不要部署：是
+最小下一步：只给一个能改变决策的步骤</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/evaluate_improvement_direction_gate.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/evaluate_improvement_direction_gate.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_evidence_registry.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_evidence_registry.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_rag_train_loop_summary_pack.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_rag_train_loop_summary_pack.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">Harness 课程总索引</a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">第 7 课：A/B 与 Profile Gate Harness</a></li>
+</ul>
+<p class="muted">到这里，Harness 入门路线的 1-8 课已经闭环。下一步可以做复习测验，或者进入“如何读一份真实训练报告”的实战课。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>它已经不是单点，但缺 EV label，所以应该进入 needs_label，而不是 profile。';}
+  else{el.innerHTML='<span class="bad">不够稳。</span>RAG flow loop 不能跳过 EV label、shadow、A/B 和人工 gate。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会要求 agent 先查历史、跑十问 gate、输出缺失证据，并禁止 profile/deploy。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 忘记历史失败，或者绕过证据 gate 盲目消耗预算。';}
+}
+</script>
+</body>
+</html>

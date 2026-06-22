@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 7 课：A/B 与 Profile Gate Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:980px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 7 课：A/B 与 Profile Gate Harness</h1>
+<p class="muted">目标：理解 whole-game A/B 是安全门，profile gate 是人工审批门，不是单点证明。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心模型</h2>
+<p class="formula"><strong>A/B 是整体安全检查；Profile Gate 是写入审批门。</strong></p>
+<p>在前几课里，你已经学了 branch eval、changed-choice、EV label、shadow。A/B 与 profile gate 通常应该排在后面：它们不是发现真理的第一步，而是检查“这个候选改到整体游戏里是否安全、是否值得人工批准写入”。</p>
+<pre>candidate contract
+  -> changed-choice audit
+  -> changed-row EV
+  -> shadow / boundary
+  -> whole-game A/B safety
+  -> manual profile gate</pre>
+</section>
+
+<section>
+<h2>2. 英文术语速查</h2>
+<table>
+<tr><th>英文术语</th><th>中文理解</th><th>在本项目里的意思</th></tr>
+<tr><td><code>A/B</code></td><td>两版本对比</td><td>A 是 baseline，B 是 candidate，比较整局长期表现。</td></tr>
+<tr><td><code>baseline</code></td><td>基线版本</td><td>当前策略或当前 profile。</td></tr>
+<tr><td><code>candidate</code></td><td>候选版本</td><td>准备验证的策略改动、profile patch 或模型输出。</td></tr>
+<tr><td><code>whole-game</code></td><td>整局游戏</td><td>不是只看目标分支，而是让 AI 正常打完整局。</td></tr>
+<tr><td><code>safety check</code></td><td>安全检查</td><td>确认候选不会在整体局面里明显伤害表现。</td></tr>
+<tr><td><code>profile gate</code></td><td>策略配置写入门</td><td>决定是否允许请求写 <code>ai_profile_train/play.json</code>。</td></tr>
+<tr><td><code>manual approval</code></td><td>人工批准</td><td>即使 gate 通过，也必须由用户明确确认后才能写 profile。</td></tr>
+<tr><td><code>rollback</code></td><td>回滚方案</td><td>写入后如果变差，如何撤回改动。</td></tr>
+<tr><td><code>train profile</code></td><td>训练配置</td><td><code>data/ai_profile_train.json</code>，用于训练/候选评估。</td></tr>
+<tr><td><code>play profile</code></td><td>实战配置</td><td><code>data/ai_profile_play.json</code>，影响移动端/实战建议，更严格。</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 本项目里的真实 gate</h2>
+<p>看 <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/export_train_profile_gate_v2.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/export_train_profile_gate_v2.py</code></a>。</p>
+<table>
+<tr><th>Harness 四件套</th><th>这个 gate 里的对应物</th></tr>
+<tr><td>Input</td><td>candidate profile 路径 + evidence_level</td></tr>
+<tr><td>Procedure</td><td>检查证据等级是否满足、是否需要人工批准、是否禁止 play/deploy。</td></tr>
+<tr><td>Metrics / status</td><td><code>evidence_level</code>、<code>level_condition_met</code>、<code>manual_approval_required</code></td></tr>
+<tr><td>Decision boundary</td><td><code>train_profile_write_allowed=false</code>；真实写入必须未来显式批准。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 为什么 A/B 不是万能的</h2>
+<div class="warn">
+<p><strong>whole-game A/B 很重要，但它不能替代前面的证据。</strong></p>
+<ul>
+<li>changed-choice 太少：A/B 可能几乎不触发候选，结果接近 0。</li>
+<li>changed-choice 太宽：A/B 负了也不知道伤害来自哪类局面。</li>
+<li>EV label 不稳：A/B 可能只是把噪声放大。</li>
+<li>没有 rollback：即使 A/B 小正，也不应该轻易写 play profile。</li>
+</ul>
+</div>
+<p>所以正确心智是：</p>
+<pre>A/B 不是“证明单点策略正确”的工具；
+A/B 是“候选进入整体系统后是否安全”的工具。</pre>
+</section>
+
+<section class="card">
+<h2>5. 看一个真实写入门例子</h2>
+<p>参考：<a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/rag/strategy_customization_v1_20260614/train_profile_write_gate_strategy_v1.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/rag/strategy_customization_v1_20260614/train_profile_write_gate_strategy_v1.md</code></a></p>
+<pre>Decision: manual_train_profile_write_approval_requested
+Target: data/ai_profile_train.json only
+Play/deploy: false
+Changed rows: 2
+Paired A/B: small-positive
+Gate result: 可以请求用户确认是否写入 train profile</pre>
+<p>注意这里不是“自动写入”，而是“可以请求用户确认”。而且只针对 <code>train profile</code>，不是 <code>play profile</code>，也不是部署。</p>
+</section>
+
+<section>
+<h2>6. 小测验：什么时候能请求写 profile？</h2>
+<p>下面哪种情况最接近可以请求写 <code>train profile</code>？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. 单个 replay case 的 branch EV 很正。</button>
+<button onclick="answer(false)">B. changed-choice 为 0，但 whole-game A/B 小正。</button>
+<button onclick="answer(true)">C. candidate 边界清楚，changed rows 可解释，changed-row EV 稳定，whole-game A/B 不负，有 rollback，并且只请求人工批准写 train profile。</button>
+<button onclick="answer(false)">D. shadow 模型信心很高，直接写 play profile。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：一个候选 whole-game A/B 小正，你想避免我直接写 play profile。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. A/B 正了，直接写 play profile 并部署。</button>
+<button onclick="promptAnswer(true,1)">B. 请先汇总 candidate contract、changed-choice、changed-row EV、whole-game A/B、rollback plan；如果只满足 train gate，请只请求人工批准写 train profile，不要写 play 或部署。</button>
+<button onclick="promptAnswer(false,1)">C. 忽略 changed-choice，只看 A/B 总分。</button>
+<button onclick="promptAnswer(false,1)">D. 自动决定，不用问我。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：A/B 结果接近 0，但 changed-choice 很低。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. A/B 没收益，所以这个方向彻底没价值。</button>
+<button onclick="promptAnswer(true,2)">B. 请先解释 A/B 接近 0 是否由低触发导致；如果是低触发，回到 changed-row EV 和产品价值判断，不要直接按 whole-game 结果否定。</button>
+<button onclick="promptAnswer(false,2)">C. 继续扩大 A/B 到很大样本，不用看触发率。</button>
+<button onclick="promptAnswer(false,2)">D. 把触发条件放宽，让 A/B 更容易看到差异。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后看 A/B 或 profile gate 报告，用这个模板：</p>
+<pre>Candidate:
+Baseline:
+Changed-choice count/rate:
+Changed-row EV:
+Whole-game A/B result:
+Seed split:
+Safety risk:
+Rollback plan:
+Train profile allowed?
+Play profile allowed?
+Deploy allowed?
+Manual approval required?</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/export_train_profile_gate_v2.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/export_train_profile_gate_v2.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/rag/strategy_customization_v1_20260614/train_profile_write_gate_strategy_v1.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/rag/strategy_customization_v1_20260614/train_profile_write_gate_strategy_v1.md</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/candidate_reviews/20260617_claim_peng_refined_split_ev_gate/train_profile_gate_review.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/candidate_reviews/20260617_claim_peng_refined_split_ev_gate/train_profile_gate_review.md</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">第 6 课：Shadow Harness</a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：RAG Flow Loop 里的 Harness，把十问 gate、evidence registry、summary pack 串起来。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>profile gate 要求一整条证据链，而且仍然需要人工批准。';}
+  else{el.innerHTML='<span class="bad">不够安全。</span>单点、低触发、shadow 信心或单个 A/B 数字都不能直接写 profile。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会要求 agent 区分 train/play/deploy，并把 A/B 放回完整证据链里解释。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 把 A/B 当万能证明，或者绕过人工 profile gate。';}
+}
+</script>
+</body>
+</html>

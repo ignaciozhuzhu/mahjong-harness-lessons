@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 3 课：Replay / Branch Eval Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:960px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 3 课：Replay / Branch Eval Harness</h1>
+<p class="muted">目标：理解为什么 pass / peng / chi / discard 分支不能只看单次结果，而要用受控反事实模拟。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心问题</h2>
+<p class="formula"><strong>同一个局面，强行走两个分支，重复模拟未来，比较长期收益。</strong></p>
+<p>这就是 replay / branch eval harness 的核心。它不是问“这一次实际后来发生了什么”，而是问：</p>
+<pre>如果当时 A：pass，会怎样？
+如果当时 B：peng/chi/discard，会怎样？
+在许多随机后续牌墙下，哪个长期平均更好？</pre>
+</section>
+
+<section>
+<h2>2. 为什么不能只看单局结果</h2>
+<p>麻将有随机摸牌、多人行动、不完全信息。单局后续结果可能只是运气。</p>
+<table>
+<tr><th>单局复盘误区</th><th>Branch eval 的做法</th></tr>
+<tr><td>“我这次过胡后来摸到了好牌，所以过胡一定对。”</td><td>固定当前局面，重复模拟很多次，比较平均分。</td></tr>
+<tr><td>“这次 peng 后放炮了，所以 peng 一定错。”</td><td>比较 pass 分支和 peng 分支在同类后续随机下的长期 EV。</td></tr>
+<tr><td>“AI 这手看起来很怪。”</td><td>用反事实分支验证它是噪声、低触发，还是可推广错误。</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 本项目里的真实 harness</h2>
+<p>看 <code>scripts/training/run_claim_counterfactual.py</code>。它的文件说明是：</p>
+<pre>Focused counterfactual: simulate pass vs human's actual peng/chi on selected cases.</pre>
+<table>
+<tr><th>Harness 四件套</th><th>这个脚本里的对应物</th></tr>
+<tr><td>Input</td><td><code>--input</code> 的 cases，包含 <code>round_id</code>、<code>source_event_index</code>、<code>seat</code>、<code>human_action</code>、<code>tile</code></td></tr>
+<tr><td>Procedure</td><td>从 replay 重建局面；强制 pass 分支；强制 claim 分支；分别跑 <code>simulate_round()</code></td></tr>
+<tr><td>Metrics</td><td><code>pass_avg</code>、<code>claim_avg</code>、<code>delta = claim - pass</code>、胜率差、pos/neg/tie</td></tr>
+<tr><td>Decision boundary</td><td>只产生 EV 证据；不能自动写 profile；正式 claim/pass 证据必须用 <code>max_turns=180</code></td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 你要看懂的三个数字</h2>
+<table>
+<tr><th>数字</th><th>意思</th><th>怎么看</th></tr>
+<tr><td><code>delta = claim - pass</code></td><td>claim 分支平均分减 pass 分支平均分</td><td>正数支持 claim，负数支持 pass</td></tr>
+<tr><td><code>pos/neg/tie</code></td><td>多个 seed 或多个 case 中，方向支持/反对/接近持平的数量</td><td>比单个平均值更能看稳定性</td></tr>
+<tr><td><code>max_turns=180</code></td><td>模拟到足够长的未来，不用短截尾糊弄结论</td><td>claim 分支收益报告少了它，只能当工具调试</td></tr>
+</table>
+<div class="warn">
+<p><strong>本项目规则：</strong>claim 分支收益模拟禁止用短截尾 <code>max_turns=80</code> 当结论。正式 pass/peng/chi A/B 报告必须明确 <code>max_turns=180</code>。</p>
+</div>
+</section>
+
+<section class="card">
+<h2>5. Branch eval 的决策边界</h2>
+<p>一个 branch eval 正向，一般只说明“这个方向值得继续”，不等于能上线。</p>
+<pre>单个 case 正向
+  -> 可能只是单点正例，diagnostic_only
+多个同桶 case 正向
+  -> 可能 needs_label / needs_shadow
+changed-choice 足够 + EV 稳定 + A/B 安全
+  -> 才可能 candidate_review_ready
+人工批准
+  -> 才能写 train/play profile</pre>
+<p>这正好对应你们现在接入的十问 gate。</p>
+</section>
+
+<section>
+<h2>6. 快速练习</h2>
+<p>下面哪个结论最谨慎、最符合本项目规则？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. 一个 pass→peng case 的 delta 是 +8，所以马上写 profile。</button>
+<button onclick="answer(true)">B. 一个 case 的 delta 是 +8，先记为强正例，再找同类 case 做 holdout / label bank。</button>
+<button onclick="answer(false)">C. 一个 seed 是正的，所以这个方向稳定。</button>
+<button onclick="answer(false)">D. max_turns=80 跑得快，所以可以当正式结论。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：你看到一个 pass→peng 单点分支结果很正，想让我帮你判断这个方向是否值得继续，而不是直接上线。下面哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. 这个 peng 看起来收益很大，直接帮我写入 profile。</button>
+<button onclick="promptAnswer(true,1)">B. 请把这个 pass→peng 正例当作候选方向，先判断它是单点正例还是错误家族；检查覆盖、runtime-visible、负例边界、EV label 稳定性，并给出下一步 gate。</button>
+<button onclick="promptAnswer(false,1)">C. 你觉得这个打法对不对？给我一个结论就行。</button>
+<button onclick="promptAnswer(false,1)">D. 多跑几次，直到结果为正。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：你担心 agent 为了让目标 case 翻正，设计出很窄的 exact patch。下面哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. 不管覆盖多少，只要这把能修好就行。</button>
+<button onclick="promptAnswer(false,2)">B. 帮我调一个最强参数，尽量让目标 case 赢。</button>
+<button onclick="promptAnswer(true,2)">C. 请优先寻找可泛化的错误家族，不要为了单例收窄阈值；如果覆盖太低或负例边界不清，请标记 diagnostic_only，而不是写 profile。</button>
+<button onclick="promptAnswer(false,2)">D. 直接用最大的模型判断，不用跑 harness。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后看 pass/peng/chi/discard 分支报告，用这个模板：</p>
+<pre>Branch A:
+Branch B:
+max_turns:
+seed / simulations:
+mean delta:
+pos / neg / tie:
+coverage:
+negative boundary:
+next gate:</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="../scripts/training/run_claim_counterfactual.py"><code>scripts/training/run_claim_counterfactual.py</code></a></li>
+<li><a href="0002-four-parts-of-a-harness.html">第 2 课：Harness 的四件套</a></li>
+<li><a href="../reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：Changed-choice Harness，学习为什么“触发得太少”会让一个看似正向的策略无法晋级。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>单点强正例很有价值，但它通常只是下一轮证据生成的起点，不是 profile 写入证据。';}
+  else{el.innerHTML='<span class="bad">不够谨慎。</span>branch eval 要看覆盖、seed 稳定性、max_turns、负例边界和后续 gate，不能单点上线。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会指定目标、证据边界、禁止行为和下一步 gate，让 agent 不会直接跳到 profile 写入。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 追单点结果、忽略覆盖/负例/证据边界，或者绕过 harness。';}
+}
+</script>
+</body>
+</html>

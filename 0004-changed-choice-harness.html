@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 4 课：Changed-choice Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:980px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 4 课：Changed-choice Harness</h1>
+<p class="muted">目标：理解为什么“策略看起来正向”还不够，必须先知道它到底会改变多少真实决策。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心模型</h2>
+<p class="formula"><strong>Changed-choice = 候选策略真的会把当前策略的哪些决策改掉。</strong></p>
+<p>很多候选在目标 case 上看起来很强，但放到真实 replay / self-play 决策语料里，可能几乎不触发；也可能触发太广，改了一堆不该改的局面。Changed-choice harness 就是先检查这个。</p>
+</section>
+
+<section>
+<h2>2. 为什么 changed-choice 很关键</h2>
+<table>
+<tr><th>情况</th><th>风险</th><th>应该怎么处理</th></tr>
+<tr><td>changed rows = 0</td><td>候选几乎不改变行为，whole-game A/B 很可能看不到收益。</td><td>停止 profile 路线，保留 diagnostic 或重新设计触发条件。</td></tr>
+<tr><td>changed rows 很少</td><td>可能只是 exact patch，目标 case 翻正但长期强度无意义。</td><td>需要证明这些 changed rows 的 EV 很高；A/B 只当安全检查。</td></tr>
+<tr><td>trigger rate 太高</td><td>候选太宽，可能误伤大量自然局面。</td><td>先收窄边界，找负例排除条件。</td></tr>
+<tr><td>changed rows 适中且可解释</td><td>最适合进入 changed-row EV。</td><td>生成 EV label queue，检查正负边界。</td></tr>
+</table>
+</section>
+
+
+<section class="card">
+<h2>2.5 英文术语速查</h2>
+<p>本课会出现一些英文项目术语，先看这张表：</p>
+<table>
+<tr><th>英文术语</th><th>中文理解</th><th>在本项目里的意思</th></tr>
+<tr><td><code>changed-choice</code></td><td>改变了选择</td><td>候选策略相比当前策略，实际会把哪些决策改掉。</td></tr>
+<tr><td><code>changed rows</code></td><td>被改变的行数</td><td>在决策语料里，有多少条决策会被候选策略改写。</td></tr>
+<tr><td><code>trigger rate</code></td><td>触发率</td><td>changed rows / audited opportunities；表示候选策略触发得多不多。</td></tr>
+<tr><td><code>audited opportunities</code></td><td>被审计的机会数</td><td>总共扫描了多少个可能触发候选策略的局面。</td></tr>
+<tr><td><code>candidate</code></td><td>候选策略</td><td>还没有上线，只是在验证中的规则、profile 参数或 contract。</td></tr>
+<tr><td><code>contract</code></td><td>候选约束说明</td><td>明确候选策略允许改哪些局面、不能改哪些局面。</td></tr>
+<tr><td><code>exclusion counts</code></td><td>排除数量统计</td><td>说明有多少局面因为 BB、七对倾向、chi overlap 等原因被排除。</td></tr>
+<tr><td><code>gate</code></td><td>关卡 / 审批门</td><td>决定候选下一步是 reject、diagnostic、EV label、shadow、A/B 还是 profile gate。</td></tr>
+<tr><td><code>diagnostic_only</code></td><td>仅诊断</td><td>有学习价值，但证据不够，不能写 profile。</td></tr>
+<tr><td><code>profile</code></td><td>AI 策略配置</td><td><code>data/ai_profile_train.json</code> / <code>data/ai_profile_play.json</code> 这类控制 AI 行为的配置。</td></tr>
+</table>
+</section>
+
+
+<section class="card">
+<h2>3. 本项目里的真实例子</h2>
+<p>看 <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/candidate_reviews/20260617_claim_peng_refined_split_audit/changed_choice_audit_report.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/candidate_reviews/20260617_claim_peng_refined_split_audit/changed_choice_audit_report.md</code></a>：</p>
+<pre>Audited opportunities: 9284
+Changed rows: 94
+Trigger rate: 0.010125
+Next gate decision: ready_for_changed_row_ev</pre>
+<p>这说明 refined claim:peng contract 不是只改 1 个目标 case，也不是大范围乱改。它在 9284 个机会里改了 94 个，触发率约 1.01%，因此适合进入下一步 changed-row EV，而不是直接 A/B 或写 profile。</p>
+</section>
+
+<section>
+<h2>4. 四件套拆解</h2>
+<table>
+<tr><th>Harness 四件套</th><th>Changed-choice audit 里的对应物</th></tr>
+<tr><td>Input</td><td>候选 contract / candidate profile + replay/self-play decision corpus</td></tr>
+<tr><td>Procedure</td><td>逐行比较 current policy 与 candidate policy：当前 pass 是否会变 peng？当前 discard 是否会变另一张？</td></tr>
+<tr><td>Metrics</td><td><code>audited opportunities</code>、<code>changed rows</code>、<code>trigger_rate</code>、exclusion counts、changed_by_family</td></tr>
+<tr><td>Decision boundary</td><td>决定是 reject / diagnostic_only / ready_for_changed_row_ev / too_broad_requires_refinement</td></tr>
+</table>
+</section>
+
+<section class="warn">
+<h2>5. 关键误区</h2>
+<p><strong>不要把 whole-game A/B 当成 changed-choice 的替代品。</strong></p>
+<p>如果 changed-choice 太低，A/B 可能跑了很多局也几乎没改动作，结果接近 0 并不能证明策略没用；它可能只是低触发。如果 changed-choice 太高，A/B 负了也很难知道是哪类 changed rows 造成伤害。</p>
+<p>正确顺序通常是：</p>
+<pre>candidate contract
+  -> changed-choice audit
+  -> changed-row EV
+  -> negative boundary split
+  -> whole-game safety A/B
+  -> manual profile gate</pre>
+</section>
+
+<section class="card">
+<h2>6. 小测验：怎么判断 changed-choice 结果？</h2>
+<p>一个候选在目标 case 上 EV 很正，但 changed-choice audit 显示：扫描 9000 个机会，只改变 1 行。最合理的结论是？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. 说明这个策略很精准，马上写 profile。</button>
+<button onclick="answer(true)">B. 低触发，先当 diagnostic；除非这一行 EV 极高且有明确产品价值，否则不走 whole-game 强度提升路线。</button>
+<button onclick="answer(false)">C. 多跑 whole-game A/B，总会看出收益。</button>
+<button onclick="answer(false)">D. 放宽阈值直到 changed rows 变多，不用检查负例。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：我提出一个候选策略，看起来能修复你的目标错题。你想避免我直接写 profile，应该怎么提示？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. 这个方向看起来对，直接帮我上线。</button>
+<button onclick="promptAnswer(true,1)">B. 请先做 changed-choice audit：报告扫描机会数、changed rows、trigger rate、changed_by_family 和 exclusion counts；如果低触发或太宽，先不要 A/B 或写 profile。</button>
+<button onclick="promptAnswer(false,1)">C. 你自己判断一下，不用给我细节。</button>
+<button onclick="promptAnswer(false,1)">D. 只要目标 case 能翻正，其它不用管。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：changed-choice 结果显示触发率 9%，你担心候选太宽。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. 触发多说明覆盖大，继续写 profile。</button>
+<button onclick="promptAnswer(true,2)">B. 请先按 changed rows 做分桶和负例边界分析，找出哪些 changed rows 是正 EV、哪些是伤害；必要时收窄 contract，再进入 EV label。</button>
+<button onclick="promptAnswer(false,2)">C. 直接跑更大 A/B，让样本数解决一切。</button>
+<button onclick="promptAnswer(false,2)">D. 把触发率藏起来，只汇报平均分。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后看 changed-choice 报告，用这个模板：</p>
+<pre>Candidate:
+Audited opportunities:
+Changed rows:
+Trigger rate:
+Changed families:
+Exclusion counts:
+Too low / too broad / usable:
+Next gate:</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/rag/build_changed_choice_audit_v1.py"><code>scripts/rag/build_changed_choice_audit_v1.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/candidate_reviews/20260617_claim_peng_refined_split_audit/changed_choice_audit_report.md"><code>20260617_claim_peng_refined_split_audit</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">第 3 课：Replay / Branch Eval Harness</a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：EV Label Harness，学习如何判断 EV label 是否稳定，而不是被单 seed 或小样本骗。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>低触发不等于没价值，但通常不足以支撑 whole-game 强度提升或 profile 写入。';}
+  else{el.innerHTML='<span class="bad">不够谨慎。</span>changed-choice 太低或太宽都不能直接上线，必须先看覆盖和边界。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会要求 agent 先报告触发范围、分桶、负例边界和下一步 gate，避免直接追单点上线。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 忽略触发率、覆盖和误伤边界，直接跳到 A/B 或 profile。';}
+}
+</script>
+</body>
+</html>

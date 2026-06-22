@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 1 课：在杭州麻将项目里理解 Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:920px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 1 课：在杭州麻将项目里理解 Harness</h1>
+<p class="muted">目标：下次你看到 “eval harness / multi-profile harness / recompute harness”，能马上判断它在项目里负责什么、不能证明什么。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 先给一个项目化定义</h2>
+<p class="formula"><strong>Harness = 可复现的实验外壳。</strong><br>它把“候选策略/规则/模型”接到固定输入、固定流程、固定指标上，然后产出可比较的结果。</p>
+<p>在本项目里，它经常不是线上 AI 决策本体，而是用来回答这类问题：</p>
+<ul>
+<li>这个 hu/pass 阈值要不要放宽？</li>
+<li>某个 discard 规则改了以后，holdout 会不会变差？</li>
+<li>一个 profile nudge 是否有足够 changed-choice 覆盖，值得正式评估？</li>
+</ul>
+</section>
+
+<section>
+<h2>2. 本仓库里的真实例子</h2>
+<p>最清楚的例子是 <code>scripts/evaluate_replay_calibration.py</code>。它的注释明确说：这不是最终模型，而是一个 reproducible harness，用来衡量未来标签是否支持扩大/收窄 guard。</p>
+<table>
+<tr><th>harness 部件</th><th>这个脚本里的对应物</th></tr>
+<tr><td>固定输入</td><td><code>data/tuning/replay_policy_calibration_dataset_20260601.json</code></td></tr>
+<tr><td>候选规则</td><td><code>_hu_shadow_pred()</code>、<code>_discard_shadow_pred()</code></td></tr>
+<tr><td>参数搜索</td><td><code>_grid_hu()</code>、<code>_grid_discard()</code></td></tr>
+<tr><td>指标</td><td>accuracy、holdout_accuracy、weighted_margin、complexity、promotion_safe</td></tr>
+<tr><td>输出</td><td><code>data/tuning/replay_policy_calibration_eval_20260601.md</code></td></tr>
+<tr><td>结论边界</td><td>报告里写明：shadow evaluations，不是 automatic production changes</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 一个简单判断法：四问</h2>
+<ol>
+<li><strong>输入固定吗？</strong> dataset、seed、profile、replay 是否明确？</li>
+<li><strong>流程固定吗？</strong> 是否每次按同样步骤运行？</li>
+<li><strong>指标固定吗？</strong> 是否输出 accuracy / holdout / 胜率 / changed-choice 等？</li>
+<li><strong>边界清楚吗？</strong> 是否说明结果只是诊断、候选证据，还是能直接改生产？</li>
+</ol>
+<p>四个问题都能答出来，就很像 harness。</p>
+</section>
+
+<section>
+<h2>4. 和“生产代码”的区别</h2>
+<table>
+<tr><th>生产策略</th><th>Harness</th></tr>
+<tr><td>真实对局时直接决定打哪张/胡不胡</td><td>离线复跑或模拟，用来测候选策略</td></tr>
+<tr><td>目标是稳定服务玩家/AI</td><td>目标是生成证据，帮助调参或否决方案</td></tr>
+<tr><td>一次错误会影响实际行为</td><td>一次错误通常影响实验结论，需要修 harness 或重跑</td></tr>
+<tr><td>关注实时性和兼容性</td><td>关注可复现、可比较、可解释</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>5. 小练习：识别 harness</h2>
+<p>下面哪个最像本项目里的 harness？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. 一个函数在真实对局中直接返回最终弃牌。</button>
+<button onclick="answer(true)">B. 一个脚本固定 replay 标签，套 shadow rule，输出 holdout accuracy 报告。</button>
+<button onclick="answer(false)">C. 一条文档结论说“这类牌以后应该更保守”。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section>
+<h2>6. 你在本项目里应该怎么用这个词</h2>
+<p>建议你以后读报告时这样说：</p>
+<pre>这个 harness 的输入是什么？
+它测的是生产策略，还是 shadow rule？
+它有没有 holdout？
+它的结论能不能 promotion，还是只能当 diagnostic？</pre>
+<p>这会避免一个常见误区：看到 harness 结果正向，就误以为可以直接上线。当前项目的训练规则里其实很强调：小样本、单 seed、低 changed-choice 覆盖，通常只能作为诊断。</p>
+</section>
+
+<section>
+<h2>7. 本课主参考</h2>
+<ul>
+<li><a href="../scripts/evaluate_replay_calibration.py"><code>scripts/evaluate_replay_calibration.py</code></a>：本仓库最直接的 reproducible harness 例子。</li>
+<li><a href="../reference/harness-glossary.html">Harness 速查表</a>：以后复习时看这张。</li>
+</ul>
+<p class="muted">如果你愿意，下一课可以继续讲：如何读一个 eval harness 的报告，判断它够不够支持策略修改。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>它有固定输入、固定规则、固定指标和报告输出，所以是典型 harness。';}
+  else{el.innerHTML='<span class="bad">还差一点。</span>harness 的关键不是“有策略/有结论”，而是“可复现地运行并产出可比较证据”。';}
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 2 课：Harness 的四件套</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:940px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 2 课：Harness 的四件套</h1>
+<p class="muted">目标：看到一个 eval / rollout / calibration 脚本时，能拆出它的输入、流程、指标、决策边界。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今日核心模型</h2>
+<p class="formula"><strong>一个 harness = 输入 + 固定流程 + 指标 + 决策边界。</strong></p>
+<p>只要你能拆出这四件事，就基本能判断这个实验结果到底能证明什么、不能证明什么。</p>
+</section>
+
+<section>
+<h2>2. 四件套分别是什么</h2>
+<table>
+<tr><th>部件</th><th>要问的问题</th><th>本项目里的常见形态</th></tr>
+<tr><td>输入 input</td><td>它吃什么数据？数据是否固定？</td><td>replay sqlite、case json、self-play corpus、EV label queue、profile 文件</td></tr>
+<tr><td>固定流程 procedure</td><td>它每次是否按同样步骤跑？</td><td>固定 seed、固定 max_turns、固定 profile、固定参数网格、固定候选动作</td></tr>
+<tr><td>指标 metrics</td><td>它用什么数字判断好坏？</td><td>accuracy、holdout_accuracy、EV delta、positive_rate、changed-choice、trigger rate</td></tr>
+<tr><td>决策边界 decision boundary</td><td>结果能导致什么动作？不能导致什么动作？</td><td>reject、diagnostic_only、needs_label、needs_shadow、candidate_review_ready、manual profile gate</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 用真实脚本拆一次</h2>
+<p>看 <code>scripts/evaluate_replay_calibration.py</code>。</p>
+<table>
+<tr><th>四件套</th><th>脚本里的对应物</th></tr>
+<tr><td>输入</td><td><code>DEFAULT_DATASET = data/tuning/replay_policy_calibration_dataset_20260601.json</code></td></tr>
+<tr><td>固定流程</td><td><code>_grid_hu()</code> 和 <code>_grid_discard()</code> 对参数网格逐项评估；<code>_hu_shadow_pred()</code>、<code>_discard_shadow_pred()</code> 生成 shadow prediction。</td></tr>
+<tr><td>指标</td><td><code>accuracy</code>、<code>holdout_accuracy</code>、<code>weighted_margin</code>、<code>complexity</code>、<code>promotion_safe</code></td></tr>
+<tr><td>决策边界</td><td>报告明确说这些是 <code>shadow evaluations</code>，不是 automatic production changes。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 为什么“决策边界”最重要</h2>
+<p>很多 AI 调参误判，不是因为数字算错，而是因为把证据级别用错。</p>
+<div class="warn">
+<p><strong>一个 harness 结果正向，不等于可以写 profile。</strong></p>
+<p>它可能只说明：这个方向值得继续 label、值得做 shadow、值得做 changed-choice audit，或者只值得保留为 diagnostic。</p>
+</div>
+<p>你们刚接入的十问 gate，本质上就是把“决策边界”机器化：</p>
+<pre>single_point        -> diagnostic_only
+error_family no EV  -> needs_label
+stable EV no shadow -> needs_shadow
+safe all gates      -> candidate_review_ready
+</pre>
+</section>
+
+<section class="card">
+<h2>5. 快速练习：拆四件套</h2>
+<p>下面哪一项最像“指标 metrics”？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. 输入文件是 replay_policy_calibration_dataset_20260601.json。</button>
+<button onclick="answer(false)">B. 脚本对 hu/pass 参数网格逐项评估。</button>
+<button onclick="answer(true)">C. 输出 holdout_accuracy 和 weighted_margin。</button>
+<button onclick="answer(false)">D. 报告说明不是 automatic production changes。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section>
+<h2>6. 今天你要记住的一句话</h2>
+<pre>读 harness 先不要问“结果是不是正的”，
+先问：输入是什么、流程是什么、指标是什么、结果允许我们做什么。</pre>
+</section>
+
+<section>
+<h2>7. 课后项目练习</h2>
+<p>下次你看到一个训练/评估报告时，按下面模板写 4 行：</p>
+<pre>Input:
+Procedure:
+Metrics:
+Decision boundary:</pre>
+<p>如果其中任何一行写不出来，就说明这个结果还不能被你放心使用。</p>
+</section>
+
+<section>
+<h2>8. 本课参考</h2>
+<ul>
+<li><a href="../scripts/evaluate_replay_calibration.py"><code>scripts/evaluate_replay_calibration.py</code></a></li>
+<li><a href="../reference/harness-glossary.html">Harness 术语速查</a></li>
+<li><a href="../reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：Replay / Branch Eval Harness，学习为什么 pass/peng/chi/discard 分支不能只看单次结果。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>holdout_accuracy 和 weighted_margin 是衡量结果的数字，所以属于 metrics。';}
+  else{el.innerHTML='<span class="bad">还差一点。</span>A 是输入，B 是流程，D 是决策边界。';}
+}
+</script>
+</body>
+</html>

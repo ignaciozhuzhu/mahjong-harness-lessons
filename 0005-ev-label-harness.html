@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>第 5 课：EV Label Harness</title>
+<style>
+  :root{--fg:#111827;--muted:#6b7280;--line:#e5e7eb;--blue:#2563eb;--bg:#ffffff;--soft:#f8fafc;--green:#16a34a;--red:#dc2626;--amber:#d97706}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans SC",sans-serif;line-height:1.68;max-width:980px;margin:42px auto;padding:0 24px;color:var(--fg);background:var(--bg)}
+  h1{font-size:32px;letter-spacing:-.02em;margin:0 0 8px} h2{font-size:22px;margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+  p{margin:12px 0}.muted{color:var(--muted)}.card{background:var(--soft);border:1px solid var(--line);border-radius:12px;padding:18px;margin:18px 0}
+  code{background:#eef2ff;color:#3730a3;border-radius:5px;padding:2px 5px} pre{background:#0f172a;color:#e5e7eb;border-radius:12px;padding:16px;overflow:auto;font-size:14px}
+  table{border-collapse:collapse;width:100%;margin:16px 0}th,td{border:1px solid var(--line);padding:9px 10px;text-align:left;vertical-align:top}th{background:#f9fafb}
+  .formula{font-size:18px;background:#ecfeff;border-left:4px solid #06b6d4;padding:12px 16px;border-radius:8px}.warn{background:#fffbeb;border-left:4px solid var(--amber);padding:12px 16px;border-radius:8px}.quiz button{display:block;width:100%;text-align:left;margin:8px 0;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}.quiz button:hover{border-color:var(--blue)}.ok{color:var(--green);font-weight:700}.bad{color:var(--red);font-weight:700}
+</style>
+</head>
+<body>
+<header>
+<h1>第 5 课：EV Label Harness</h1>
+<p class="muted">目标：学会判断 EV label 是否稳定，避免被单 seed、小样本或极端 outlier 骗。</p>
+</header>
+<!-- HARNESS_COURSE_NAV_START -->
+<nav class="card" style="font-size:14px">
+<strong>Harness 课程导航：</strong> <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0001-harness-in-hz-mahjong.html">1</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0002-four-parts-of-a-harness.html">2</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0003-replay-branch-eval-harness.html">3</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">4</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0005-ev-label-harness.html">5</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0006-shadow-harness.html">6</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0007-ab-profile-gate-harness.html">7</a> | <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0008-rag-flow-loop-harness.html">8</a>
+<br><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/harness-course-index.html">完整课程总索引</a>
+</nav>
+<!-- HARNESS_COURSE_NAV_END -->
+
+<section class="card">
+<h2>1. 今天的核心模型</h2>
+<p class="formula"><strong>EV label = 对一个决策分支的长期收益标签。</strong></p>
+<p>如果 branch eval 是“跑两条路”，那么 EV label harness 就是把很多分支结果整理成可训练、可筛选、可复查的标签库。</p>
+<pre>branch rollout result
+  -> EV label row
+  -> label quality report
+  -> shadow / candidate / gate</pre>
+</section>
+
+<section>
+<h2>2. 英文术语速查</h2>
+<table>
+<tr><th>英文术语</th><th>中文理解</th><th>在本项目里的意思</th></tr>
+<tr><td><code>EV</code></td><td>期望收益</td><td>长期平均得分或收益，不是单局运气。</td></tr>
+<tr><td><code>label</code></td><td>标签</td><td>给某个决策分支打上的收益结果，例如 peng 比 pass 高多少。</td></tr>
+<tr><td><code>score_delta</code></td><td>分数差</td><td>候选分支平均分 - 当前分支平均分。</td></tr>
+<tr><td><code>positive_rate</code></td><td>正样本比例</td><td>多少比例的 label 支持候选分支。</td></tr>
+<tr><td><code>median</code></td><td>中位数</td><td>把结果排序后中间的值，比平均数更不容易被极端值骗。</td></tr>
+<tr><td><code>outlier</code></td><td>极端值</td><td>少数特别大的结果，可能把平均数拉高。</td></tr>
+<tr><td><code>fresh label</code></td><td>新鲜标签</td><td>来自新语料/新 run 的标签，比历史重复样本更能检验泛化。</td></tr>
+<tr><td><code>max_turns</code></td><td>最大模拟回合数</td><td>正式 claim/pass EV 证据必须是 <code>180</code>，不能用短截尾当结论。</td></tr>
+<tr><td><code>promotion_evidence</code></td><td>晋级证据</td><td>是否足够支持进入 profile gate；本项目默认先是 <code>false</code>。</td></tr>
+</table>
+</section>
+
+<section class="card">
+<h2>3. 本项目里的真实 harness</h2>
+<p>看 <a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_ev_label_factory.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_ev_label_factory.py</code></a>。</p>
+<table>
+<tr><th>Harness 四件套</th><th>这个脚本里的对应物</th></tr>
+<tr><td>Input</td><td>已有 rollout 结果 JSON，例如 claim/pass 分支结果。</td></tr>
+<tr><td>Procedure</td><td>把每个结果转成统一 label row：branch_a、branch_b、score_delta、seed、simulations、max_turns。</td></tr>
+<tr><td>Metrics</td><td><code>label_count</code>、<code>fresh_label_count</code>、<code>median_score_delta</code>、<code>positive_rate</code>、<code>top_outlier_share</code>、<code>all_claim_labels_max_turns_180</code></td></tr>
+<tr><td>Decision boundary</td><td>生成 label quality report；默认 <code>promotion_evidence=false</code>，不能自动写 profile。</td></tr>
+</table>
+</section>
+
+<section>
+<h2>4. 为什么不能只看平均数</h2>
+<p>假设 5 个 label 的 score_delta 是：</p>
+<pre>+20, -2, -2, -2, -2</pre>
+<p>平均数是 +2.4，看起来正；但中位数是 -2，大部分样本其实反对候选。这就是 outlier-driven positive：被一个极端正例拉高。</p>
+<div class="warn">
+<p><strong>判断 EV label 稳定性，至少看三件事：</strong></p>
+<ul>
+<li>平均数是否正；</li>
+<li>中位数是否正；</li>
+<li>positive_rate 是否足够高。</li>
+</ul>
+<p>如果平均数正但中位数 ≤ 0，就要高度怀疑是 outlier 驱动。</p>
+</div>
+</section>
+
+<section class="card">
+<h2>5. 读 label_quality_report 的顺序</h2>
+<ol>
+<li><strong>先看 max_turns：</strong>claim/pass 正式证据是否全是 <code>180</code>？</li>
+<li><strong>再看 label_count：</strong>是不是太少？</li>
+<li><strong>再看 median_score_delta：</strong>中位数是否支持候选？</li>
+<li><strong>再看 positive_rate：</strong>多数 label 是否同方向？</li>
+<li><strong>最后看 outlier：</strong>是不是被一个极端值拉起来？</li>
+</ol>
+</section>
+
+<section>
+<h2>6. 小测验：哪个 EV label 更可信？</h2>
+<p>下面哪个结果更适合继续进入 shadow / candidate review？</p>
+<div class="quiz">
+<button onclick="answer(false)">A. label_count=3，avg=+8，median=-1，positive_rate=0.33。</button>
+<button onclick="answer(true)">B. label_count=72，avg=+1.2，median=+0.6，positive_rate=0.65，max_turns=180。</button>
+<button onclick="answer(false)">C. label_count=10，avg=+5，但 max_turns=80。</button>
+<button onclick="answer(false)">D. label_count=1，目标 case +20。</button>
+<p id="feedback"></p>
+</div>
+</section>
+
+<section class="card">
+<h2>7. Prompt 练习：你该怎么向 agent 提问？</h2>
+<p>场景：一个方向的平均 EV 是正的，但你担心被极端值骗。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,1)">A. 平均值是正的，直接推进 profile。</button>
+<button onclick="promptAnswer(true,1)">B. 请检查 label_count、median_score_delta、positive_rate、top_outlier_share 和 max_turns；如果平均数正但中位数不正，请标记 outlier-driven，不要进入 profile。</button>
+<button onclick="promptAnswer(false,1)">C. 只看最大的正例，说明这个打法潜力很大。</button>
+<button onclick="promptAnswer(false,1)">D. 把负例删掉后再汇报。</button>
+<p id="promptFeedback1"></p>
+</div>
+
+<p>场景：你想让我继续扩大 label bank，但不想让我乱跑长任务。哪个提示词最好？</p>
+<div class="quiz">
+<button onclick="promptAnswer(false,2)">A. 尽量多跑，越多越好。</button>
+<button onclick="promptAnswer(true,2)">B. 请先给出最小能改变决策的 EV label 队列，明确 rows、seeds、simulations、max_turns=180、workers=1/2、停止规则和 status/progress 文件位置。</button>
+<button onclick="promptAnswer(false,2)">C. 你看着办，不用汇报中间状态。</button>
+<button onclick="promptAnswer(false,2)">D. 先跑 6 小时，结果再说。</button>
+<p id="promptFeedback2"></p>
+</div>
+</section>
+
+<section>
+<h2>8. 课后练习模板</h2>
+<p>以后看 EV label 报告，用这个模板：</p>
+<pre>Label family:
+Label count:
+Fresh / historical:
+max_turns:
+avg_score_delta:
+median_score_delta:
+positive / negative / tie:
+positive_rate:
+outlier risk:
+promotion_evidence:
+next gate:</pre>
+</section>
+
+<section>
+<h2>9. 本课参考</h2>
+<ul>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_ev_label_factory.py"><code>/Users/maccio/work/hangzhou-mahjong-trainer/scripts/training/build_ev_label_factory.py</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/ev_labels/20260617_claim_peng_refined_split_ev/refined_split_ev_summary.md"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/ev_labels/20260617_claim_peng_refined_split_ev/refined_split_ev_summary.md</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/data/ev_labels/20260617_claim_peng_refined_split_ev/label_quality_report.json"><code>/Users/maccio/work/hangzhou-mahjong-trainer/data/ev_labels/20260617_claim_peng_refined_split_ev/label_quality_report.json</code></a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/lessons/0004-changed-choice-harness.html">第 4 课：Changed-choice Harness</a></li>
+<li><a href="file:///Users/maccio/work/hangzhou-mahjong-trainer/reference/harness-course-roadmap.html">Harness 学习课程路线</a></li>
+</ul>
+<p class="muted">下一课建议：Shadow Harness，学习为什么模型/规则要先离线评分，不应该直接改动作。</p>
+</section>
+<script>
+function answer(ok){
+  const el=document.getElementById('feedback');
+  if(ok){el.innerHTML='<span class="ok">正确。</span>它样本更多、中位数为正、正样本比例较高，并且 max_turns=180，更适合继续进入下一层 gate。';}
+  else{el.innerHTML='<span class="bad">不够稳。</span>样本太少、max_turns 不合规，或平均值被 outlier 拉高，都不能当晋级证据。';}
+}
+function promptAnswer(ok, idx){
+  const el=document.getElementById('promptFeedback'+idx);
+  if(ok){el.innerHTML='<span class="ok">正确。</span>好的提示词会要求 agent 检查稳定性指标、合规参数和停止规则，而不是只追平均正值。';}
+  else{el.innerHTML='<span class="bad">不够好。</span>这个提示词容易让 agent 被单点正例或长任务冲动带偏，忽略 label 稳定性和防卡死边界。';}
+}
+</script>
+</body>
+</html>
